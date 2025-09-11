@@ -1,78 +1,64 @@
-name: Build and deploy NextChat (standalone) to Azure Web App
+name: Build & Deploy (standalone simple)
 
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
 
-concurrency:
-  group: nextchat-prod
-  cancel-in-progress: false
-
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Use Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'yarn'
+          cache: yarn
 
-      - name: Install deps (Yarn, 冻结锁文件)
-        run: yarn install --frozen-lockfile
+      - name: Install
+        run: yarn install --frozen-lockfile || yarn install
 
-      - name: Build (standalone)
+      - name: Build (your script already sets BUILD_MODE=standalone)
         run: yarn build
 
-      - name: Prepare deploy folder
+      - name: Prepare deploy folder (simple copy)
         run: |
+          set -e
           rm -rf deploy
-          mkdir -p deploy
-          # 拷贝 standalone 产物
-          cp -r .next/standalone/* deploy/
-          # 拷贝静态资源
-          mkdir -p deploy/.next/static
-          cp -r .next/static/* deploy/.next/static/
-          # 拷贝 public (若存在)
-          if [ -d public ]; then cp -r public deploy/public; fi
-          echo "==== Deploy folder preview (top 40 files) ===="
-          find deploy -type f | head -n 40
+          mkdir deploy
+          # 拷贝 standalone 根（含 server.js / 剪裁 node_modules）
+          cp -R .next/standalone/* deploy/
+          # 直接把整个 .next 拷进去（简单粗暴，确保 BUILD_ID 等都在）
+          mkdir -p deploy/.next
+          rsync -a .next/ deploy/.next/ --exclude standalone
+          # public
+          if [ -d public ]; then cp -R public deploy/public; fi
+          echo "Preview:"
+          find deploy -maxdepth 3 -type f | head -n 50
+          test -f deploy/.next/BUILD_ID || (echo "Missing BUILD_ID!" && exit 1)
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nextchat-standalone
+          name: standalone-app
           path: deploy
-          retention-days: 3
-          if-no-files-found: error
+          retention-days: 2
 
   deploy:
     runs-on: ubuntu-latest
     needs: build
-    environment:
-      name: production
-      url: https://nextchat.azurewebsites.net
     steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          name: nextchat-standalone
+          name: standalone-app
           path: deploy
 
-      - name: Deploy to Azure Web App
+      - name: Deploy to Azure
         uses: azure/webapps-deploy@v3
         with:
           app-name: nextchat
           slot-name: Production
           package: ./deploy
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_0E77F0FAA36C4D8A945D86E0C1342646 }}
-
-      - name: Post info
-        run: echo "Deployed standalone bundle. Ensure Startup command = 'node server.js'"
